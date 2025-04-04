@@ -7,6 +7,7 @@ import {
   type Memory,
   type UUID,
   createUniqueUuid,
+  instrument,
   logger,
   parseBooleanFromText,
   truncateToCompleteSentence,
@@ -106,32 +107,77 @@ export class TwitterPostClient {
   }
 
   /**
-   * Creates a Tweet object based on the tweet result, client information, and Twitter username.
+   * Creates a Tweet object from tweet result data.
    *
-   * @param {any} tweetResult - The result object from the Twitter API representing a tweet.
+   * @param {any} tweetResult - The result data from the tweet creation.
    * @param {any} client - The client object containing profile information.
-   * @param {string} twitterUsername - The Twitter username of the user.
+   * @param {string} twitterUsername - The Twitter username for building the permanent URL.
    * @returns {Tweet} A Tweet object with specific properties extracted from the tweet result and client information.
    */
   createTweetObject(tweetResult: any, client: any, twitterUsername: string): Tweet {
-    return {
-      id: tweetResult.rest_id,
-      name: client.profile.screenName,
-      username: client.profile.username,
-      text: tweetResult.legacy.full_text,
-      conversationId: tweetResult.legacy.conversation_id_str,
-      createdAt: tweetResult.legacy.created_at,
-      timestamp: new Date(tweetResult.legacy.created_at).getTime(),
-      userId: client.profile.id,
-      inReplyToStatusId: tweetResult.legacy.in_reply_to_status_id_str,
-      permanentUrl: `https://twitter.com/${twitterUsername}/status/${tweetResult.rest_id}`,
-      hashtags: [],
-      mentions: [],
-      photos: [],
-      thread: [],
-      urls: [],
-      videos: [],
-    } as Tweet;
+    const startTime = Date.now();
+
+    instrument.logEvent({
+      stage: 'twitter',
+      subStage: 'create_tweet_object',
+      event: 'create_tweet_object_start',
+      data: {
+        startTime,
+        tweetId: tweetResult?.rest_id,
+        username: twitterUsername,
+      },
+    });
+
+    try {
+      const tweet = {
+        id: tweetResult.rest_id,
+        name: client.profile.screenName,
+        username: client.profile.username,
+        text: tweetResult.legacy.full_text,
+        conversationId: tweetResult.legacy.conversation_id_str,
+        createdAt: tweetResult.legacy.created_at,
+        timestamp: new Date(tweetResult.legacy.created_at).getTime(),
+        userId: client.profile.id,
+        inReplyToStatusId: tweetResult.legacy.in_reply_to_status_id_str,
+        permanentUrl: `https://twitter.com/${twitterUsername}/status/${tweetResult.rest_id}`,
+        hashtags: [],
+        mentions: [],
+        photos: [],
+        thread: [],
+        urls: [],
+        videos: [],
+      } as Tweet;
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'create_tweet_object',
+        event: 'create_tweet_object_complete',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          tweetId: tweet.id,
+          textLength: tweet.text?.length || 0,
+        },
+      });
+
+      return tweet;
+    } catch (error) {
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'create_tweet_object',
+        event: 'create_tweet_object_error',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          error: error instanceof Error ? error.message : String(error),
+          tweetId: tweetResult?.rest_id,
+        },
+      });
+
+      throw error;
+    }
   }
 
   /**
@@ -150,43 +196,89 @@ export class TwitterPostClient {
     roomId: UUID,
     rawTweetContent: string
   ) {
-    // Cache the last post details
-    await runtime.setCache<any>(`twitter/${client.profile.username}/lastPost`, {
-      id: tweet.id,
-      timestamp: Date.now(),
-    });
+    const startTime = Date.now();
 
-    // Cache the tweet
-    await client.cacheTweet(tweet);
-
-    // Log the posted tweet
-    logger.log(`Tweet posted:\n ${tweet.permanentUrl}`);
-
-    // Ensure the room and participant exist
-    await runtime.ensureRoomExists({
-      id: roomId,
-      name: 'Twitter Feed',
-      source: 'twitter',
-      type: ChannelType.FEED,
-    });
-    await runtime.ensureParticipantInRoom(runtime.agentId, roomId);
-
-    // Create a memory for the tweet
-    await runtime.createMemory(
-      {
-        id: createUniqueUuid(this.runtime, tweet.id),
-        entityId: runtime.agentId,
-        agentId: runtime.agentId,
-        content: {
-          text: rawTweetContent.trim(),
-          url: tweet.permanentUrl,
-          source: 'twitter',
-        },
+    instrument.logEvent({
+      stage: 'twitter',
+      subStage: 'process_and_cache_tweet',
+      event: 'process_and_cache_tweet_start',
+      data: {
+        startTime,
+        tweetId: tweet.id,
+        textLength: rawTweetContent?.length || 0,
         roomId,
-        createdAt: tweet.timestamp,
       },
-      'messages'
-    );
+    });
+
+    try {
+      // Cache the last post details
+      await runtime.setCache<any>(`twitter/${client.profile.username}/lastPost`, {
+        id: tweet.id,
+        timestamp: Date.now(),
+      });
+
+      // Cache the tweet
+      await client.cacheTweet(tweet);
+
+      // Log the posted tweet
+      logger.log(`Tweet posted:\n ${tweet.permanentUrl}`);
+
+      // Ensure the room and participant exist
+      await runtime.ensureRoomExists({
+        id: roomId,
+        name: 'Twitter Feed',
+        source: 'twitter',
+        type: ChannelType.FEED,
+      });
+      await runtime.ensureParticipantInRoom(runtime.agentId, roomId);
+
+      // Create a memory for the tweet
+      await runtime.createMemory(
+        {
+          id: createUniqueUuid(this.runtime, tweet.id),
+          entityId: runtime.agentId,
+          agentId: runtime.agentId,
+          content: {
+            text: rawTweetContent.trim(),
+            url: tweet.permanentUrl,
+            source: 'twitter',
+          },
+          roomId,
+          createdAt: tweet.timestamp,
+        },
+        'messages'
+      );
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'process_and_cache_tweet',
+        event: 'process_and_cache_tweet_complete',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          tweetId: tweet.id,
+          permanentUrl: tweet.permanentUrl,
+          roomId,
+        },
+      });
+    } catch (error) {
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'process_and_cache_tweet',
+        event: 'process_and_cache_tweet_error',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          error: error instanceof Error ? error.message : String(error),
+          tweetId: tweet.id,
+          roomId,
+        },
+      });
+
+      throw error;
+    }
   }
 
   /**
@@ -236,6 +328,22 @@ export class TwitterPostClient {
     tweetId?: string,
     mediaData?: MediaData[]
   ) {
+    const startTime = Date.now();
+
+    instrument.logEvent({
+      stage: 'twitter',
+      subStage: 'api_post_tweet',
+      event: 'api_post_tweet_start',
+      data: {
+        startTime,
+        textLength: content.length,
+        isReply: !!tweetId,
+        replyToTweetId: tweetId,
+        hasMedia: !!mediaData && mediaData.length > 0,
+        mediaCount: mediaData?.length || 0,
+      },
+    });
+
     try {
       const standardTweetResult = await client.requestQueue.add(
         async () => await client.twitterClient.sendTweet(content, tweetId, mediaData)
@@ -243,11 +351,56 @@ export class TwitterPostClient {
       const body = await standardTweetResult.json();
       if (!body?.data?.create_tweet?.tweet_results?.result) {
         logger.error('Error sending tweet; Bad response:', body);
+
+        instrument.logEvent({
+          stage: 'twitter',
+          subStage: 'api_post_tweet',
+          event: 'api_post_tweet_error',
+          data: {
+            startTime,
+            endTime: Date.now(),
+            duration: Date.now() - startTime,
+            error: 'Bad response from Twitter API',
+            textLength: content.length,
+            response: JSON.stringify(body).substring(0, 500),
+          },
+        });
+
         return;
       }
-      return body.data.create_tweet.tweet_results.result;
+
+      const result = body.data.create_tweet.tweet_results.result;
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'api_post_tweet',
+        event: 'api_post_tweet_complete',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          tweetId: result.rest_id,
+          textLength: content.length,
+        },
+      });
+
+      return result;
     } catch (error) {
       logger.error('Error sending standard Tweet:', error);
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'api_post_tweet',
+        event: 'api_post_tweet_error',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          error: error instanceof Error ? error.message : String(error),
+          textLength: content.length,
+        },
+      });
+
       throw error;
     }
   }
@@ -273,6 +426,20 @@ export class TwitterPostClient {
     twitterUsername: string,
     mediaData?: MediaData[]
   ) {
+    const startTime = Date.now();
+
+    instrument.logEvent({
+      stage: 'twitter',
+      subStage: 'post_tweet',
+      event: 'post_tweet_start',
+      data: {
+        startTime,
+        textLength: tweetTextForPosting.length,
+        hasMedia: !!mediaData && mediaData.length > 0,
+        mediaCount: mediaData?.length || 0,
+      },
+    });
+
     try {
       logger.log('Posting new tweet:\n');
 
@@ -286,8 +453,37 @@ export class TwitterPostClient {
       const tweet = this.createTweetObject(result, client, twitterUsername);
 
       await this.processAndCacheTweet(runtime, client, tweet, roomId, rawTweetContent);
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'post_tweet',
+        event: 'post_tweet_complete',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          tweetId: tweet.id,
+          tweetLength: tweetTextForPosting.length,
+          isNoteTweet: tweetTextForPosting.length > 280 - 1,
+          url: tweet.permanentUrl,
+        },
+      });
     } catch (error) {
       logger.error('Error sending tweet:');
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'post_tweet',
+        event: 'post_tweet_error',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          textLength: tweetTextForPosting.length,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+
       throw error;
     }
   }
@@ -388,6 +584,20 @@ export class TwitterPostClient {
    * @returns {Promise<any>} The result from the Twitter API
    */
   private async postToTwitter(text: string, mediaData: MediaData[] = []): Promise<any> {
+    const startTime = Date.now();
+
+    instrument.logEvent({
+      stage: 'twitter',
+      subStage: 'api_post_tweet',
+      event: 'api_post_tweet_start',
+      data: {
+        startTime,
+        textLength: text.length,
+        hasMedia: mediaData.length > 0,
+        mediaCount: mediaData.length,
+      },
+    });
+
     try {
       // Check if this tweet is a duplicate of the last one
       const lastPost = await this.runtime.getCache<any>(
@@ -398,6 +608,20 @@ export class TwitterPostClient {
         const lastTweet = await this.client.getTweet(lastPost.id);
         if (lastTweet && lastTweet.text === text) {
           logger.warn('Tweet is a duplicate of the last post. Skipping to avoid duplicate.');
+
+          instrument.logEvent({
+            stage: 'twitter',
+            subStage: 'api_post_tweet',
+            event: 'api_post_tweet_duplicate',
+            data: {
+              startTime,
+              endTime: Date.now(),
+              duration: Date.now() - startTime,
+              textLength: text.length,
+              duplicateOfTweetId: lastPost.id,
+            },
+          });
+
           return null;
         }
       }
@@ -426,12 +650,56 @@ export class TwitterPostClient {
       const body = await result.json();
       if (!body?.data?.create_tweet?.tweet_results?.result) {
         logger.error('Error sending tweet; Bad response:', body);
+
+        instrument.logEvent({
+          stage: 'twitter',
+          subStage: 'api_post_tweet',
+          event: 'api_post_tweet_error',
+          data: {
+            startTime,
+            endTime: Date.now(),
+            duration: Date.now() - startTime,
+            textLength: text.length,
+            error: 'Bad response from Twitter API',
+            hasResponse: !!body,
+          },
+        });
+
         return null;
       }
 
-      return body.data.create_tweet.tweet_results.result;
+      const tweetResult = body.data.create_tweet.tweet_results.result;
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'api_post_tweet',
+        event: 'api_post_tweet_complete',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          textLength: text.length,
+          tweetId: tweetResult.rest_id || tweetResult.id_str || tweetResult.legacy?.id_str,
+        },
+      });
+
+      return tweetResult;
     } catch (error) {
       logger.error('Error posting to Twitter:', error);
+
+      instrument.logEvent({
+        stage: 'twitter',
+        subStage: 'api_post_tweet',
+        event: 'api_post_tweet_error',
+        data: {
+          startTime,
+          endTime: Date.now(),
+          duration: Date.now() - startTime,
+          textLength: text.length,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+
       throw error;
     }
   }
